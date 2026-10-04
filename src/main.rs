@@ -1,3 +1,5 @@
+use std::{num::NonZeroU32, sync::Arc};
+
 use async_session::{MemoryStore, Session, SessionStore};
 use axum::{
     Form, RequestPartsExt, Router,
@@ -8,8 +10,12 @@ use axum::{
     serve,
 };
 use axum_extra::{TypedHeader, headers};
+use rusqlite::{
+    Connection,
+    types::{FromSql, FromSqlResult, ValueRef},
+};
 use serde::{Deserialize, Serialize};
-use tokio::net::TcpListener;
+use tokio::{net::TcpListener, sync::Mutex};
 use tower_http::trace::TraceLayer;
 
 static SESSION_COOKIE: &'static str = "SESSION";
@@ -17,6 +23,17 @@ static SESSION_COOKIE: &'static str = "SESSION";
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt::init();
+    let connection = Connection::open("data.db").unwrap();
+    connection
+        .execute(
+            "CREATE TABLE IF NOT EXISTS user (
+               id INTEGER PRIMARY KEY,
+               name TEXT UNIQUE NOT NULL,
+               pass TEXT NOT NULL
+             )",
+            (),
+        )
+        .unwrap();
     let app = Router::new()
         .route("/", get(root))
         .route("/status", get(status))
@@ -28,6 +45,7 @@ async fn main() {
         .layer(TraceLayer::new_for_http())
         .with_state(AppState {
             store: MemoryStore::new(),
+            db: Arc::new(Mutex::new(connection)),
         });
 
     let listener = TcpListener::bind("0.0.0.0:4242").await.unwrap();
@@ -40,9 +58,38 @@ async fn get_session(parts: &mut Parts, store: &MemoryStore) -> Option<Session> 
     store.load_session(session.into()).await.unwrap()
 }
 
+fn load_user_by_name(db: &Connection, name: &str) -> Option<User> {
+    let mut stmt = db
+        .prepare("SELECT id, name, pass FROM user WHERE name = ?")
+        .unwrap();
+    stmt.query_one((name,), |r| {
+        Ok(User {
+            id: r.get(0)?,
+            name: r.get(1)?,
+            pass: r.get(2)?,
+        })
+    })
+    .ok()
+}
+
+fn load_user_by_id(db: &Connection, id: UserId) -> Option<User> {
+    let mut stmt = db
+        .prepare("SELECT id, name, pass FROM user WHERE id = ?")
+        .unwrap();
+    stmt.query_one((id.0,), |r| {
+        Ok(User {
+            id: r.get(0)?,
+            name: r.get(1)?,
+            pass: r.get(2)?,
+        })
+    })
+    .ok()
+}
+
 #[derive(Clone)]
 struct AppState {
     store: MemoryStore,
+    db: Arc<Mutex<Connection>>,
 }
 
 impl FromRef<AppState> for MemoryStore {
@@ -51,8 +98,14 @@ impl FromRef<AppState> for MemoryStore {
     }
 }
 
-#[derive(Serialize, Deserialize)]
-struct UserId(u64);
+impl FromRef<AppState> for Arc<Mutex<Connection>> {
+    fn from_ref(state: &AppState) -> Self {
+        Arc::clone(&state.db)
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+struct UserId(NonZeroU32);
 
 impl<S> FromRequestParts<S> for UserId
 where
@@ -93,15 +146,35 @@ where
     }
 }
 
+impl FromSql for UserId {
+    fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {
+        <NonZeroU32 as FromSql>::column_result(value).map(Self)
+    }
+}
+
+#[derive(Debug)]
+struct User {
+    id: UserId,
+    name: String,
+    // TODO: security
+    pass: String,
+}
+
 async fn root() -> impl IntoResponse {
     Html(include_str!("../pages/root.html"))
 }
 
-async fn status(user: Option<UserId>) -> impl IntoResponse {
-    match user {
-        Some(user) => Html(format!("you are user {}", user.0)),
-        None => Html("you are not logged in".into()),
-    }
+async fn status(
+    State(db): State<Arc<Mutex<Connection>>>,
+    user: Option<UserId>,
+) -> impl IntoResponse {
+    let Some(user) = user else {
+        return Html("you are not logged in".into());
+    };
+    let Some(user) = load_user_by_id(&*db.lock().await, user) else {
+        return Html("reading failed".into());
+    };
+    Html(format!("you are {}", user.name))
 }
 
 async fn logout(
@@ -129,14 +202,19 @@ struct Login {
 }
 
 async fn login_handler(
+    State(db): State<Arc<Mutex<Connection>>>,
     State(store): State<MemoryStore>,
     Form(login): Form<Login>,
 ) -> Result<impl IntoResponse, Redirect> {
-    if login.user != "jonas" || login.pass != "password" {
+    let Some(user) = load_user_by_name(&*db.lock().await, &login.user) else {
+        return Err(Redirect::to("/loginfail"));
+    };
+    if user.pass != login.pass {
         return Err(Redirect::to("/loginfail"));
     }
+
     let mut session = Session::new();
-    session.insert("user", UserId(1)).unwrap();
+    session.insert("user", user.id.clone()).unwrap();
     let cookie = store.store_session(session).await.unwrap().unwrap();
     let cookie = format!("{SESSION_COOKIE}={cookie}; SameSite=Lax; HttpOnly; Secure; Path=/");
     let mut headers = HeaderMap::new();
