@@ -1,7 +1,10 @@
-use std::{num::NonZeroU32, sync::Arc};
+use std::{
+    collections::{HashMap, hash_map::Entry},
+    num::NonZeroU32,
+    sync::Arc,
+};
 
 use anyhow::Context;
-use async_session::{MemoryStore, Session, SessionStore};
 use axum::{
     Form, RequestPartsExt, Router,
     body::Body,
@@ -12,13 +15,19 @@ use axum::{
     serve,
 };
 use axum_extra::{TypedHeader, headers};
+use rand::random;
 use rusqlite::{
     Connection, OptionalExtension,
     types::{FromSql, FromSqlResult, ValueRef},
 };
-use serde::{Deserialize, Serialize};
-use tokio::{net::TcpListener, sync::Mutex};
+use serde::Deserialize;
+use tokio::{
+    net::TcpListener,
+    sync::{Mutex, RwLock},
+};
 use tower_http::trace::TraceLayer;
+
+type Sessions = Arc<RwLock<HashMap<String, UserId>>>;
 
 static SESSION_COOKIE: &'static str = "SESSION";
 
@@ -46,20 +55,12 @@ async fn main() {
         .route("/loginfail", get(loginfail))
         .layer(TraceLayer::new_for_http())
         .with_state(AppState {
-            store: MemoryStore::new(),
+            sessions: Arc::new(RwLock::new(HashMap::new())),
             db: Arc::new(Mutex::new(connection)),
         });
 
     let listener = TcpListener::bind("0.0.0.0:4242").await.unwrap();
     serve(listener, app).await.unwrap()
-}
-
-async fn get_session(parts: &mut Parts, store: &MemoryStore) -> anyhow::Result<Option<Session>> {
-    let cookies = parts.extract::<TypedHeader<headers::Cookie>>().await?;
-    let Some(session) = cookies.get(SESSION_COOKIE) else {
-        return Ok(None);
-    };
-    store.load_session(session.into()).await
 }
 
 fn load_user_by_name(db: &Connection, name: &str) -> anyhow::Result<Option<User>> {
@@ -94,13 +95,13 @@ fn load_user_by_id(db: &Connection, id: UserId) -> anyhow::Result<Option<User>> 
 
 #[derive(Clone)]
 struct AppState {
-    store: MemoryStore,
+    sessions: Sessions,
     db: Arc<Mutex<Connection>>,
 }
 
-impl FromRef<AppState> for MemoryStore {
+impl FromRef<AppState> for Sessions {
     fn from_ref(state: &AppState) -> Self {
-        state.store.clone()
+        state.sessions.clone()
     }
 }
 
@@ -110,7 +111,7 @@ impl FromRef<AppState> for Arc<Mutex<Connection>> {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 struct UserId(NonZeroU32);
 
 #[derive(Debug)]
@@ -139,19 +140,23 @@ where
 
 impl<S> FromRequestParts<S> for UserId
 where
-    MemoryStore: FromRef<S>,
+    Sessions: FromRef<S>,
     S: Send + Sync,
 {
     type Rejection = AuthRejection;
 
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
-        let store = MemoryStore::from_ref(state);
-        let session = get_session(parts, &store)
-            .await?
-            .ok_or(AuthRejection::Redirect)?;
-        let user = session
-            .get::<UserId>("user")
-            .ok_or(AuthRejection::Redirect)?;
+        let store = Sessions::from_ref(state);
+        let cookies = parts.extract::<TypedHeader<headers::Cookie>>().await?;
+        let Some(session) = cookies.get(SESSION_COOKIE) else {
+            return Err(AuthRejection::Redirect);
+        };
+        let user = store
+            .read()
+            .await
+            .get(session)
+            .ok_or(AuthRejection::Redirect)?
+            .clone();
 
         Ok(user)
     }
@@ -159,7 +164,7 @@ where
 
 impl<S> OptionalFromRequestParts<S> for UserId
 where
-    MemoryStore: FromRef<S>,
+    Sessions: FromRef<S>,
     S: Send + Sync,
 {
     type Rejection = !;
@@ -208,13 +213,13 @@ async fn status(
 }
 
 async fn logout(
-    State(store): State<MemoryStore>,
+    State(store): State<Sessions>,
     TypedHeader(cookies): TypedHeader<headers::Cookie>,
 ) -> Result<impl IntoResponse, AppError> {
     if let Some(cookie) = cookies.get(SESSION_COOKIE)
-        && let Some(session) = store.load_session(cookie.into()).await?
+        && let Entry::Occupied(session) = store.write().await.entry(cookie.into())
     {
-        store.destroy_session(session).await?;
+        session.remove();
     }
     Ok(Redirect::to("/"))
 }
@@ -223,29 +228,34 @@ async fn login_page() -> impl IntoResponse {
     Html(include_str!("../pages/login.html"))
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 struct Login {
     user: String,
     pass: String,
 }
 
+#[axum::debug_handler(state = AppState)]
 async fn login_handler(
     State(db): State<Arc<Mutex<Connection>>>,
-    State(store): State<MemoryStore>,
+    State(store): State<Sessions>,
     Form(login): Form<Login>,
 ) -> Result<Response, AppError> {
     if let Some(user) = load_user_by_name(&*db.lock().await, &login.user)?
         && user.pass == login.pass
     {
-        let mut session = Session::new();
-        session.insert("user", user.id.clone())?;
-        let cookie = store
-            .store_session(session)
-            .await?
-            .context("new session has a cookie value")?;
-        let cookie = format!("{SESSION_COOKIE}={cookie}; SameSite=Lax; HttpOnly; Secure; Path=/");
+        let session_key: String = random::<u64>().to_string();
+        let cookie =
+            format!("{SESSION_COOKIE}={session_key}; SameSite=Lax; HttpOnly; Secure; Path=/");
         let mut headers = HeaderMap::new();
         headers.insert(SET_COOKIE, cookie.parse()?);
+
+        store
+            .write()
+            .await
+            .insert(session_key, user.id)
+            .is_none()
+            .then_some(())
+            .context("duplicate session key")?;
 
         Ok((headers, Redirect::to("/loginsuccess")).into_response())
     } else {
