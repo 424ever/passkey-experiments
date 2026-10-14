@@ -27,6 +27,8 @@ use tokio::{
 };
 use tower_http::trace::TraceLayer;
 
+pub mod cbor;
+
 type Sessions = Arc<RwLock<HashMap<String, UserId>>>;
 
 static SESSION_COOKIE: &'static str = "SESSION";
