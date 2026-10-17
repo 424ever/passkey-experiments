@@ -1,5 +1,7 @@
 pub mod cbor;
 mod error;
+mod pk;
+mod session;
 mod user;
 
 use std::{
@@ -13,7 +15,7 @@ use axum::{
     extract::{FromRef, State},
     http::{HeaderMap, header::SET_COOKIE},
     response::{Html, IntoResponse, Redirect, Response},
-    routing::{get, post},
+    routing::get,
     serve,
 };
 use axum_extra::{TypedHeader, headers};
@@ -28,10 +30,11 @@ use tower_http::trace::TraceLayer;
 
 use crate::{
     error::AppError,
-    user::{UserId, load_user_by_id, load_user_by_name},
+    session::Session,
+    user::{load_user_by_id, load_user_by_name},
 };
 
-type Sessions = Arc<RwLock<HashMap<String, UserId>>>;
+type Sessions = Arc<RwLock<HashMap<String, Session>>>;
 
 static SESSION_COOKIE: &'static str = "SESSION";
 
@@ -54,9 +57,9 @@ async fn main() {
     let app = Router::new()
         .route("/", get(root))
         .route("/logout", get(logout))
-        .route("/login", get(login_page))
-        .route("/login", post(login_handler))
+        .route("/login", get(login_page).post(login_handler))
         .route("/loginfail", get(loginfail))
+        .nest("/pk", pk::routes())
         .layer(TraceLayer::new_for_http())
         .with_state(AppState {
             sessions: Arc::new(RwLock::new(HashMap::new())),
@@ -87,16 +90,16 @@ impl FromRef<AppState> for Arc<Mutex<Connection>> {
 
 async fn root(
     State(db): State<Arc<Mutex<Connection>>>,
-    user: Option<UserId>,
+    session: Option<Session>,
 ) -> Result<impl IntoResponse, AppError> {
     let mut resp = String::new();
 
     resp.push_str(r#"<h1>awesome website</h1>"#);
     resp.push_str(r#"<p>a place to keep your most private data</p>"#);
 
-    if let Some(uid) = user
-        && let Some(udat) = load_user_by_id(&*db.lock().await, uid)?
-    {
+    if let Some(session) = session {
+        let uid = session.user;
+        let udat = load_user_by_id(&*db.lock().await, uid)?;
         resp.push_str(&format!(r#"<p>hello {}</p>"#, udat.name));
         resp.push_str(r#"<p><a href="logout">logout</a></p>"#);
     } else {
@@ -152,7 +155,13 @@ async fn login_handler(
         store
             .write()
             .await
-            .insert(session_key, user.id)
+            .insert(
+                session_key,
+                Session {
+                    user: user.id,
+                    create_pk_challenge: None,
+                },
+            )
             .is_none()
             .then_some(())
             .context("duplicate session key")?;
