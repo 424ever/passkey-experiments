@@ -1,5 +1,8 @@
+use std::fmt::Display;
+
 use axum::{
     body::Body,
+    http::StatusCode,
     response::{IntoResponse, Redirect, Response},
 };
 
@@ -49,5 +52,25 @@ where
 {
     fn from(value: T) -> Self {
         Self(value.into())
+    }
+}
+
+#[derive(Debug)]
+pub struct ApiError(String);
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
+        let mut resp = Response::new(Body::new(self.0));
+        *resp.status_mut() = StatusCode::BAD_REQUEST;
+        resp
+    }
+}
+
+impl<T> From<T> for ApiError
+where
+    T: Display,
+{
+    fn from(value: T) -> Self {
+        Self(value.to_string())
     }
 }

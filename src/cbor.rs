@@ -1,5 +1,5 @@
 mod de;
 mod model;
-mod parse;
+pub mod parse;
 
-pub use de::{Deserializer, from_bytes};
+pub use de::from_bytes;

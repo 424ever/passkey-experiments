@@ -1,4 +1,5 @@
-pub mod cbor;
+mod base64url;
+mod cbor;
 mod error;
 mod pk;
 mod session;
@@ -6,7 +7,8 @@ mod user;
 
 use std::{
     collections::{HashMap, hash_map::Entry},
-    sync::Arc,
+    env,
+    sync::{Arc, OnceLock},
 };
 
 use anyhow::Context;
@@ -27,16 +29,18 @@ use tokio::{
     sync::{Mutex, RwLock},
 };
 use tower_http::trace::TraceLayer;
+use tracing::info;
 
 use crate::{
     error::AppError,
     session::Session,
-    user::{load_user_by_id, load_user_by_name},
+    user::{UserId, load_user_by_id, load_user_by_name},
 };
 
 type Sessions = Arc<RwLock<HashMap<String, Session>>>;
 
 static SESSION_COOKIE: &'static str = "SESSION";
+static ORIGIN: OnceLock<String> = OnceLock::new();
 
 #[tokio::main]
 async fn main() {
@@ -54,6 +58,30 @@ async fn main() {
         )
         .unwrap();
 
+    let fake_sessions = match env::var("PK_FAKE_SESSIONS") {
+        Ok(var) => var
+            .split(";")
+            .map(|ses| ses.split_once("=").unwrap())
+            .map(|(ses, usr)| {
+                (
+                    ses.to_owned(),
+                    Session {
+                        user: UserId(usr.parse().unwrap()),
+                        create_pk_challenge: None,
+                    },
+                )
+            })
+            .collect(),
+        Err(_) => HashMap::new(),
+    };
+
+    info!(?fake_sessions);
+
+    let origin = env::var("PK_ORIGIN").unwrap_or("localhost:4242".into());
+    ORIGIN.set(format!("http://{}", origin)).unwrap();
+
+    info!(?origin);
+
     let app = Router::new()
         .route("/", get(root))
         .route("/logout", get(logout))
@@ -62,11 +90,11 @@ async fn main() {
         .nest("/pk", pk::routes())
         .layer(TraceLayer::new_for_http())
         .with_state(AppState {
-            sessions: Arc::new(RwLock::new(HashMap::new())),
+            sessions: Arc::new(RwLock::new(fake_sessions)),
             db: Arc::new(Mutex::new(connection)),
         });
 
-    let listener = TcpListener::bind("0.0.0.0:4242").await.unwrap();
+    let listener = TcpListener::bind(origin).await.unwrap();
     serve(listener, app).await.unwrap()
 }
 
@@ -102,6 +130,7 @@ async fn root(
         let udat = load_user_by_id(&*db.lock().await, uid)?;
         resp.push_str(&format!(r#"<p>hello {}</p>"#, udat.name));
         resp.push_str(r#"<p><a href="logout">logout</a></p>"#);
+        resp.push_str(r#"<p><a href="pk/register">register passkey</a></p>"#)
     } else {
         resp.push_str(r#"<p><a href="login">login</a></p>"#);
     }

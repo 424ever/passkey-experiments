@@ -61,7 +61,7 @@ pub fn data_item<'i>(i: &mut &'i [u8]) -> ModalResult<DataItem<'i>> {
     }
 }
 
-pub(crate) fn head<'i>(i: &mut &'i [u8]) -> ModalResult<(u8, u8, Option<u64>)> {
+fn head<'i>(i: &mut &'i [u8]) -> ModalResult<(u8, u8, Option<u64>)> {
     let initial_byte = any.parse_next(i)?;
     let major_type = (initial_byte & 0b11100000) >> 5;
     let additional_information = initial_byte & 0b00011111;

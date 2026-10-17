@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 type BufferSource = Vec<u8>;
 type CoseAlgorithmIdentifier = u32;
@@ -18,9 +18,9 @@ pub mod public_key_credential {
         pub challenge: Challenge,
         pub pub_key_cred_params: Vec<Parameters>,
         pub timeout: u32,
-        pub exclude_credentials: Option<Vec<Descriptor>>,
+        pub exclude_credentials: Vec<Descriptor>,
         pub authenticator_selection: Option<AuthenticatorSelectionCriteria>,
-        pub attestation: Option<String>,
+        pub attestation: String,
         pub extensions: Option<AuthenticationExtensionsClientInputs>,
     }
 
@@ -75,3 +75,43 @@ pub struct AuthenticatorSelectionCriteria {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AuthenticationExtensionsClientInputs {}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RegisterRequest {
+    pub client_data_json: Vec<u8>,
+    pub attestation_object: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CollectedClientData {
+    pub r#type: String,
+    pub challenge: String,
+    pub origin: String,
+    #[serde(default)]
+    pub cross_origin: bool,
+    pub token_binding: Option<TokenBinding>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TokenBinding {
+    pub status: String,
+    #[serde(default)]
+    pub id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttestationObject<'a> {
+    pub auth_data: &'a [u8],
+    #[serde(flatten)]
+    pub statement: AttestationStatement,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "fmt", rename_all = "camelCase")]
+pub enum AttestationStatement {
+    None,
+}

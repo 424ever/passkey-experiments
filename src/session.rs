@@ -3,7 +3,10 @@ use axum::{
     extract::{FromRef, FromRequestParts, OptionalFromRequestParts},
     http::request::Parts,
 };
-use axum_extra::{TypedHeader, headers};
+use axum_extra::{
+    TypedHeader,
+    headers::{self},
+};
 
 use crate::{SESSION_COOKIE, Sessions, error::AuthRejection, pk::Challenge, user::UserId};
 

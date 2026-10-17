@@ -7,7 +7,7 @@ use rusqlite::{
 };
 
 #[derive(Clone, Copy, Debug)]
-pub struct UserId(NonZeroU32);
+pub struct UserId(pub NonZeroU32);
 
 #[derive(Debug)]
 pub struct User {
