@@ -3,6 +3,7 @@ mod cbor;
 mod error;
 mod pk;
 mod session;
+mod sha256;
 mod user;
 
 use std::{
@@ -41,6 +42,7 @@ type Sessions = Arc<RwLock<HashMap<String, Session>>>;
 
 static SESSION_COOKIE: &str = "SESSION";
 static ORIGIN: OnceLock<String> = OnceLock::new();
+static DOMAIN: OnceLock<String> = OnceLock::new();
 
 #[tokio::main]
 async fn main() {
@@ -77,10 +79,13 @@ async fn main() {
 
     info!(?fake_sessions);
 
-    let origin = env::var("PK_ORIGIN").unwrap_or("localhost:4242".into());
-    ORIGIN.set(format!("http://{}", origin)).unwrap();
+    let domain = env::var("PK_DOMAIN").unwrap_or("localhost".into());
+    let port = env::var("PK_PORT").unwrap_or("4242".into());
+    ORIGIN.set(format!("http://{domain}:{port}")).unwrap();
+    DOMAIN.set(domain.clone()).unwrap();
 
-    info!(?origin);
+    info!(?domain);
+    info!(?port);
 
     let app = Router::new()
         .route("/", get(root))
@@ -94,7 +99,7 @@ async fn main() {
             db: Arc::new(Mutex::new(connection)),
         });
 
-    let listener = TcpListener::bind(origin).await.unwrap();
+    let listener = TcpListener::bind(format!("{domain}:{port}")).await.unwrap();
     serve(listener, app).await.unwrap()
 }
 

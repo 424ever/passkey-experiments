@@ -10,7 +10,7 @@ use rand::{Rng, rng};
 use tracing::{Level, debug, info, span};
 
 use crate::{
-    AppState, ORIGIN, SESSION_COOKIE,
+    AppState, DOMAIN, ORIGIN, SESSION_COOKIE,
     base64url::decode,
     cbor,
     error::{ApiError, AppError},
@@ -19,6 +19,7 @@ use crate::{
         public_key_credential::{self},
     },
     session::Session,
+    sha256,
     user::load_user_by_id,
 };
 
@@ -94,9 +95,15 @@ async fn post_register(
     let attestation_object = cbor::from_bytes::<AttestationObject>(&response.attestation_object)
         .context("cbor decode attestation object")?;
     info!(?attestation_object);
+    let auth_data = attestation_object.auth_data;
 
     // 13. Verify that the rpIdHash in authData is the SHA-256 hash of the RP ID expected by the
     // Relying Party.
+    let rp_id_hash = &auth_data[..32];
+
+    let mut exp_hash = [0u8; 32];
+    sha256::digest(DOMAIN.get().unwrap().as_bytes(), &mut exp_hash);
+    (rp_id_hash == exp_hash).ok_or("rpIdHash does not match (13)")?;
 
     // 14. Verify that the User Present bit of the flags in authData is set.
 
