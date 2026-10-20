@@ -39,7 +39,7 @@ use crate::{
 
 type Sessions = Arc<RwLock<HashMap<String, Session>>>;
 
-static SESSION_COOKIE: &'static str = "SESSION";
+static SESSION_COOKIE: &str = "SESSION";
 static ORIGIN: OnceLock<String> = OnceLock::new();
 
 #[tokio::main]

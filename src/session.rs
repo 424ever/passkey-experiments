@@ -29,12 +29,11 @@ where
         let Some(session) = cookies.get(SESSION_COOKIE) else {
             return Err(AuthRejection::Redirect);
         };
-        let session = store
+        let session = *store
             .read()
             .await
             .get(session)
-            .ok_or(AuthRejection::Redirect)?
-            .clone();
+            .ok_or(AuthRejection::Redirect)?;
 
         Ok(session)
     }
@@ -51,10 +50,7 @@ where
         state: &S,
     ) -> Result<Option<Self>, Self::Rejection> {
         Ok(
-            match <Self as FromRequestParts<S>>::from_request_parts(parts, state).await {
-                Ok(u) => Some(u),
-                Err(_) => None,
-            },
+            <Self as FromRequestParts<S>>::from_request_parts(parts, state).await.ok(),
         )
     }
 }

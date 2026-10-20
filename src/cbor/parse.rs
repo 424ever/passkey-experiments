@@ -39,11 +39,10 @@ pub fn data_item<'i>(i: &mut &'i [u8]) -> ModalResult<DataItem<'i>> {
         7 => match additional_information {
             n @ 0..=23 => simple(n).ok_or(ErrMode::Backtrack(ContextError::new())),
             24 => match argument {
-                None => return Err(ErrMode::Backtrack(ContextError::new())),
-                Some(n) if n <= 31 => return Err(ErrMode::Backtrack(ContextError::new())),
+                None => Err(ErrMode::Backtrack(ContextError::new())),
+                Some(n) if n <= 31 => Err(ErrMode::Backtrack(ContextError::new())),
                 Some(n) => {
-                    return simple(n.try_into().unwrap())
-                        .ok_or(ErrMode::Backtrack(ContextError::new()));
+                    simple(n.try_into().unwrap()).ok_or(ErrMode::Backtrack(ContextError::new()))
                 }
             },
             25 => Err(ErrMode::Cut(ContextError::new())),
@@ -61,7 +60,7 @@ pub fn data_item<'i>(i: &mut &'i [u8]) -> ModalResult<DataItem<'i>> {
     }
 }
 
-fn head<'i>(i: &mut &'i [u8]) -> ModalResult<(u8, u8, Option<u64>)> {
+fn head(i: &mut &[u8]) -> ModalResult<(u8, u8, Option<u64>)> {
     let initial_byte = any.parse_next(i)?;
     let major_type = (initial_byte & 0b11100000) >> 5;
     let additional_information = initial_byte & 0b00011111;
@@ -77,7 +76,7 @@ fn head<'i>(i: &mut &'i [u8]) -> ModalResult<(u8, u8, Option<u64>)> {
                 })
                 .parse_next(i)?,
         ),
-        28 | 29 | 30 => return Err(ErrMode::Backtrack(ContextError::new())),
+        28..=30 => return Err(ErrMode::Backtrack(ContextError::new())),
         31 => match major_type {
             0 | 1 | 6 => return Err(ErrMode::Backtrack(ContextError::new())),
             2 | 3 | 4 | 5 | 7 => None,
@@ -89,7 +88,7 @@ fn head<'i>(i: &mut &'i [u8]) -> ModalResult<(u8, u8, Option<u64>)> {
     Ok((major_type, additional_information, argument))
 }
 
-fn stop_code<'i>(i: &mut &'i [u8]) -> ModalResult<()> {
+fn stop_code(i: &mut &[u8]) -> ModalResult<()> {
     head.verify(|h| matches!(h, (7, _, None)))
         .void()
         .parse_next(i)
@@ -123,15 +122,10 @@ fn byte_string(
 fn text_string(
     len: Option<u64>,
 ) -> impl for<'a> Parser<&'a [u8], Cow<'a, str>, ErrMode<ContextError>> {
-    ByteString::new(
-        len,
-        3,
-        |i| str::from_utf8(i),
-        |mut a, b| {
-            a.push_str(b);
-            a
-        },
-    )
+    ByteString::new(len, 3, str::from_utf8, |mut a, b| {
+        a.push_str(b);
+        a
+    })
 }
 
 struct ByteString<C, A> {
@@ -145,7 +139,7 @@ impl<C, A> ByteString<C, A> {
     fn new<O, CE>(len: Option<u64>, major_type: u8, conv: C, acc: A) -> Self
     where
         C: for<'i> Fn(&'i [u8]) -> Result<&'i O, CE>,
-        A: for<'a> Fn(<O as ToOwned>::Owned, &O) -> <O as ToOwned>::Owned,
+        A: Fn(<O as ToOwned>::Owned, &O) -> <O as ToOwned>::Owned,
         O: ToOwned + ?Sized,
     {
         Self {
@@ -160,7 +154,7 @@ impl<C, A> ByteString<C, A> {
 impl<'i, C, O, CE, A> Parser<&'i [u8], Cow<'i, O>, ErrMode<ContextError>> for ByteString<C, A>
 where
     C: for<'a> Fn(&'a [u8]) -> Result<&'a O, CE>,
-    A: for<'a> Fn(<O as ToOwned>::Owned, &O) -> <O as ToOwned>::Owned,
+    A: Fn(<O as ToOwned>::Owned, &O) -> <O as ToOwned>::Owned,
     CE: Send + Sync + std::error::Error + 'static,
     O: ToOwned + ?Sized,
     O::Owned: Default,

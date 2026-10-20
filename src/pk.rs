@@ -223,7 +223,7 @@ async fn get_creation_options(
             id: Vec::from(user.id.value().to_be_bytes()),
             display_name: user.name,
         },
-        challenge: challenge,
+        challenge,
         pub_key_cred_params: vec![],
         timeout: 30000,
         exclude_credentials: vec![],

@@ -50,7 +50,7 @@ where
     }
 }
 
-impl<'a, 'de> serde::Deserializer<'de> for &'a mut Deserializer<'de> {
+impl<'de> serde::Deserializer<'de> for &mut Deserializer<'de> {
     type Error = Error;
 
     fn deserialize_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
